@@ -1,1 +1,1 @@
-cargo run run_pairing.rs
+cargo run run_pairing.rs >> output.txt

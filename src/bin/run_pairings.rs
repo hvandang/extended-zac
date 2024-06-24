@@ -74,12 +74,13 @@ fn create_commit (
     d: &mut Vec<Vec<String>>,        /* A vector, contains the sub-vector of keys that have the same value as index */
     prover_params: &ProverParams,       /* A set including prover parameters for values from 1 to n (n is right below)*/
     n: u32, //? value is in [1,n]
-    bloom: &mut plum::StandardBloomFilter<str>) -> Vec<Commitment>  /* Bloom filter parameter */
+    bloom: &mut plum::StandardBloomFilter<str>,
+    verifier_params: &VerifierParams) -> (Vec<Vec<Vec<u8>>>,Vec<Commitment>)  /* Bloom filter parameter */
     /* The function returns a vector containing commitments of values from 1 to n */    
 {    
     // Initialize variables
     let mut cm: Vec<Commitment> = Vec::new();
-    
+    let mut init_value_list: Vec<Vec<Vec<u8>>> = Vec::new();
     // Push the keys to the sub-vector of d based on their values
     for (key, val) in db.iter() {
         d[*val as usize].push(key.to_string());
@@ -101,8 +102,9 @@ fn create_commit (
             // TEST: Change the set combine from 0 and ri, with only 0, means that we remove the size of D_i
             // Replace: vec![0.to_string(), ri.to_string()] with vec![0.to_string()]
             // => REsULT: FALSE
-            let (_, ci) = setcommit(&prover_params, &vec![0.to_string(), ri.to_string()], bloom);
+            let (init_value, ci) = setcommit(&prover_params, &vec![0.to_string(), ri.to_string()], bloom);
             cm.push(ci);
+            init_value_list.push(init_value);
         } else {
             let mut temp_arr = d[i as usize].clone();
             let size_d = d[i as usize].len();
@@ -111,17 +113,34 @@ fn create_commit (
 
             // TEST: Change the set combine from D_i and |D_i|, with only D_i, means that we remove the size of D_i
             // Replace: temp_arr with d[i as usize].clone() -> RESULT: FALSE
-            let (_, ci) = setcommit(&prover_params, &temp_arr, bloom);
+            let (init_value, ci) = setcommit(&prover_params, &temp_arr, bloom);
             cm.push(ci);
+            init_value_list.push(init_value);
+/*
+            let check_items = vec!["A1"];
+            let agg_proof=setprove(&prover_params,
+    	        &init_values,
+		        &check_items,
+		        bloom,
+		        &ci,
+                "M");
+
+	        let res = setverify(&verifier_params,
+                &ci,
+                &check_items,
+                bloom,
+                agg_proof);
+	        println!("result of verification:{}",res);*/
         }
     }
     
     // Generate the final commitment for the provided set_id: C_{N+1}
-    let (_, ci) = setcommit(&prover_params, vec_key, bloom);
+    let (init_value, ci) = setcommit(&prover_params, vec_key, bloom);
     cm.push(ci);
+    init_value_list.push(init_value);
     
     // return the vector of commitments cm
-    cm
+    (init_value_list,cm)
 }
     
 /// Function to change the set of items to indexes in the bloom filter that matches the items
@@ -132,11 +151,11 @@ fn settobloom(
     let mut res: Vec<usize>=vec![];
     for i in items {
 	    let mut idx = bloom.item_to_indexes(i);
-	    println!( "indexes {:?}", idx );
+	    println!( "indexes in Bloom fiter {:?}", idx );
 	    res.append(&mut idx);
     }
     let res: Vec<_> = res.into_iter().unique().collect();
-    println!( "combined indexes {:?}", res );
+    println!( "combined indexes in Bloom filter {:?}", res );
     return res;
 }
 
@@ -260,9 +279,9 @@ fn testcommit(n: u8, S: &mut [String]) {
 
 fn database_query (db: &std::collections::HashMap<String, u32>, x: &str) -> Vec<u32> {
     let mut ret: Vec<u32> = Vec::new();
-    for (key, val) in db.iter() {
-        if key == x {
-            ret.push(*val);
+    for (key, val) in db.iter() { //go through the database
+        if key == x { //if found the key x
+            ret.push(*val); // add value into the list ret
             break;
         }
     }
@@ -276,12 +295,15 @@ fn get_value_sub_vector(
     bloom: &mut plum::StandardBloomFilter<str> // bloom filter vector
     )-> Vec<Vec<u8>> { // a new bloom fitler where bit value at the defined indexes are 1 and the other bits are 0
 
+    println!("Set of indexes in get_value_sub_vector function : {:?}",idx);
     let mut value_sub_vector: Vec<Vec<u8>> = Vec::with_capacity(bloom.optimal_m);
     for _ in 0..bloom.optimal_m {
-        value_sub_vector.push(vec![48]); // bit 0
+        //value_sub_vector.push(vec![48]); // bit 0
+        value_sub_vector.push(vec![0]); 
     }
     for i in idx {
-        value_sub_vector[*i] = vec![49]; // bit 1
+        //value_sub_vector[*i] = vec![49]; // bit 1
+        value_sub_vector[*i]=vec![1];
     }
     return value_sub_vector
 }
@@ -305,7 +327,8 @@ fn prove_q (
     d: &Vec<Vec<String>>, // list of D_v
     x: &str, //queried key x
     prover_params: &ProverParams,
-    bloom: &mut plum::StandardBloomFilter<str>) -> Proof
+    bloom: &mut plum::StandardBloomFilter<str>,
+    init_value_list: Vec<Vec<Vec<u8>>>) -> Proof
 {
     if ret.len() == 0 {
         // Call ZKEDB.ProveN( Cn+1, K, {x}, r, pp)
@@ -334,7 +357,8 @@ fn prove_q (
         println!("Init values of Dv: {:?}", init_values_dv); // bloom fitler of D_v
 
         let ci = &cm[v];
-        let proof = setprove(&prover_params, &init_values_dv, &vec![x], bloom, ci, "M"); //bloom is pp
+        let init_value = &init_value_list[v];
+        let proof = setprove(&prover_params, &init_value, &vec![x], bloom, ci, "M"); //bloom is pp
         return proof;
     }
 }
@@ -363,7 +387,6 @@ fn verify_q (
 
 
 fn main() {
-
     // This is the amount of records in the database
     let items_count = 7; //1_000_000;
     // This is the false positive rate of the bloom filter that we want to achieve
@@ -371,8 +394,9 @@ fn main() {
     
     let mut bloom = StandardBloomFilter::<str>::new(items_count, fp_rate);
     let n = bloom.optimal_m;//16usize;
+    let n1 = 4; //the domain of value
     // create vector d, contains n + 1 sub_vector of keys that have the same value as index or empty
-    let mut _d: Vec<Vec<String>> = vec![Vec::new(); n + 2];
+    let mut _d: Vec<Vec<String>> = vec![Vec::new(); n1+1];//d is a list of groups, each of which contains the keys having the same value at 1,2,...,n1, plus 1 item to represent the whole list of keys
     let seed = "This is a very very very very very very long Seed";
 
     // generate the parameters, and performs pre_computation
@@ -383,7 +407,7 @@ fn main() {
 
     // --------------------- Generate data ---------------------
     // create vector of keys
-    let vec_key: Vec<String> = ["A", "B", "C", "D", "E", "F", "G"]
+    let vec_key: Vec<String> = ["A1", "B2", "C3", "D1", "E4", "F2", "G1"]
         .iter()
         .map(|&s| s.to_string())
         .collect();
@@ -396,77 +420,82 @@ fn main() {
 
     // Create the hashmap that contain key-value pairs
     let map: std::collections::HashMap<String, u32> = vec_key.iter().cloned().zip(vec_val.into_iter()).collect(); //database
+                                                                                    //print the
+                                                                                    //database
+                                                                                    for (key, value) in &map { 
+                                                                                        println!("Database content {}: {}", key, value);    
+                                                                                    }
     // ---------------------------------------------------------
 
     // Create init_values contains bytes type of bloom filter, and old_com is the commitment of the set of items
     //let (init_values,old_com) = setcommit(&prover_params,vec_key, &mut bloom);
 
-    let vec_cm = create_commit(&vec_key, &map, &mut _d, &prover_params, n as u32, &mut bloom);
-    // let init_values = get_init_values(&mut bloom);
-    println!("Commitment: {:?}", vec_cm);
+    let (vec_init_value,vec_cm) = create_commit(&vec_key, &map, &mut _d, &prover_params, n1 as u32, &mut bloom, &verifier_params);
     
-    // let mut old_commitment_bytes: Vec<Vec<u8>> = vec![];
-    // assert!(old_com.serialize(&mut old_commitment_bytes, true).is_ok());
-    /*
-    assert_eq!(
-        old_com,
-        Commitment::deserialize(&mut old_commitment_bytes[..].as_ref(), true).unwrap()
-    );*/
-
     println!("\nCommitment:  {:02x?}\n", vec_cm);
     // println!("Bloom filter array: {:?}", init_values);
     
-    let check_items = "A";
+    let check_items = "A1";
     let ret = database_query(&map, &check_items);
-    println!("result of query:{:?}",ret);
+    println!("result of database query:{:?}",ret);
 
 
-
-    // let agg_proof=setprove(&prover_params, 
-    // 	&init_values, 
-	// 	&check_items,
-	// 	&mut bloom,
-	// 	&old_com);
+   let agg_proof = prove_q(&vec_key, vec_cm.clone(), ret.clone(), &_d,&check_items, &prover_params,  &mut bloom, vec_init_value.clone());
     
-    let agg_proof = prove_q(&vec_key, vec_cm.clone(), ret.clone(), &_d,&check_items, &prover_params,  &mut bloom);
-    
-	// let res = setverify(&verifier_params,
-    //     &old_com,
-    //     &check_items,
-    //     &mut bloom,
-    //     agg_proof);
 
     let res = verify_q(&verifier_params, vec_cm.clone(), ret.clone(),&check_items, &mut bloom, agg_proof);
 
 	println!("result of verification:{}",res);
     
     // print value of items with input key, base on res
-    if res {
-        println!("The value of key {} is {}", check_items, ret[0]);
-    } else {
-        println!("The key {} is not in the database", check_items);
+    //if res {
+      //  println!("The value of key {} is {}", check_items, ret[0]);
+    //} else {
+      //  println!("The key {} is not in the database", check_items);
+    //}
+
+
+/*
+    let items_count = 10; //1_000_000;
+    let fp_rate = 0.01;
+	let mut vec: Vec<String> = Vec::new();
+    for i in 0..10 {
+        vec.push(String::from("item"));
+        vec[i].push_str(&i.to_string());
     }
 
-    /*let check_item="item1";
-	let agg_proof=setprove(&prover_params, 
-		&init_values, 
-		check_item,
+    let mut bloom = StandardBloomFilter::<str>::new(items_count, fp_rate);
+    
+    let n = bloom.optimal_m;//16usize;
+    let seed = "This is a very very very very very very long Seed";
+    // generate the parameters, and performs pre_computation
+    let (mut prover_params, verifier_params) =
+        //paramgen_from_seed("This is Leo's Favourite very very long Seed", 0, n).unwrap();
+        paramgen_from_seed(seed, 0, n).unwrap();
+    prover_params.precomp_256(); // precomp_256, or nothing, as you wish
+
+    let (init_values,old_com) = setcommit(&prover_params,&vec,&mut bloom);
+    
+    let mut old_commitment_bytes: Vec<u8> = vec![];
+    assert!(old_com.serialize(&mut old_commitment_bytes, true).is_ok());
+
+    println!("\nCommitment:  {:02x?}\n", old_commitment_bytes);
+    println!("Bloom filter array: {:?}", init_values);
+    
+    let check_items = vec!["item1","item5"];
+    let agg_proof=setprove(&prover_params, 
+    	&init_values, 
+		&check_items,
 		&mut bloom,
-		&old_com);
-	
+		&old_com,"M");
+		
 	let res = setverify(&verifier_params,
         &old_com,
-        check_item,
+        &check_items,
         &mut bloom,
         agg_proof);
 	println!("result of verification:{}",res);
-	
-	let set1=vec!["item1","item5"];
-	settobloom(set1,&mut bloom);*/
-
-
-
-
+*/
 
 }
 
