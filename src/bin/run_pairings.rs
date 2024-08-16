@@ -435,7 +435,7 @@ fn main() {
     println!("\nCommitment:  {:02x?}\n", vec_cm);
     // println!("Bloom filter array: {:?}", init_values);
     
-    let check_items = "A1";
+    let check_items = "C3";
     let ret = database_query(&map, &check_items);
     println!("result of database query:{:?}",ret);
 
